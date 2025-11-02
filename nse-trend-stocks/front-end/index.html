@@ -31,6 +31,60 @@
         .fade-enter-from, .fade-leave-to {
             opacity: 0;
         }
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 20px;
+        }
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            max-width: 900px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        .ai-analysis-content {
+            line-height: 1.8;
+            white-space: pre-wrap;
+            font-size: 14px;
+        }
+        .ai-analysis-content h1,
+        .ai-analysis-content h2,
+        .ai-analysis-content h3 {
+            font-weight: bold;
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+            color: #1f2937;
+        }
+        .ai-analysis-content h1 { font-size: 1.5rem; }
+        .ai-analysis-content h2 { font-size: 1.25rem; }
+        .ai-analysis-content h3 { font-size: 1.1rem; }
+        .ai-analysis-content ul, .ai-analysis-content ol {
+            margin-left: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        .ai-analysis-content li {
+            margin-bottom: 0.5rem;
+        }
+        .mini-spinner {
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            width: 16px;
+            height: 16px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
     </style>
 </head>
 <body class="bg-gray-50">
@@ -57,6 +111,30 @@
             </header>
 
             <div class="container mx-auto px-4 py-8">
+                <!-- Quick AI Stock Analysis -->
+                <div class="bg-gradient-to-r from-purple-600 to-indigo-600 rounded-lg shadow-lg p-6 mb-6 text-white">
+                    <h2 class="text-2xl font-bold mb-3 flex items-center gap-2">
+                        🤖 AI Stock Analysis
+                    </h2>
+                    <p class="text-purple-100 mb-4">Get comprehensive AI-powered analysis for any stock - technical, fundamental, and trading strategy insights</p>
+                    <div class="flex gap-3">
+                        <input v-model="quickAnalysisSymbol" 
+                               @keyup.enter="analyzeQuickStock"
+                               type="text" 
+                               placeholder="Enter stock symbol (e.g., RELIANCE, TCS, INFY)"
+                               class="flex-1 px-4 py-3 rounded-lg text-gray-800 font-medium focus:outline-none focus:ring-2 focus:ring-purple-300"
+                               :disabled="aiLoading">
+                        <button @click="analyzeQuickStock" 
+                                :disabled="aiLoading || !quickAnalysisSymbol"
+                                class="px-8 py-3 bg-white text-purple-600 rounded-lg font-semibold hover:bg-purple-50 disabled:bg-gray-300 disabled:text-gray-500 transition-colors flex items-center gap-2">
+                            <span v-if="!aiLoading">🤖 Analyze</span>
+                            <span v-else class="flex items-center gap-2">
+                                <div class="mini-spinner"></div> Analyzing...
+                            </span>
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Preset Strategies -->
                 <div class="bg-white rounded-lg shadow-md p-6 mb-6">
                     <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
@@ -284,10 +362,17 @@
                                             </span>
                                         </td>
                                         <td class="px-4 py-3 text-center">
-                                            <button @click.stop="toggleExpand(stock.symbol)"
-                                                    class="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm">
-                                                {{ expandedStocks[stock.symbol] ? '▼ Hide' : '▶ Details' }}
-                                            </button>
+                                            <div class="flex gap-2 justify-center">
+                                                <button @click.stop="toggleExpand(stock.symbol)"
+                                                        class="px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm">
+                                                    {{ expandedStocks[stock.symbol] ? '▼ Hide' : '▶ Details' }}
+                                                </button>
+                                                <button @click.stop="askAI(stock.symbol)"
+                                                        class="px-3 py-1 bg-purple-500 text-white rounded hover:bg-purple-600 text-sm flex items-center gap-1"
+                                                        :disabled="aiLoading">
+                                                    🤖 Ask AI
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                     
@@ -375,6 +460,98 @@
                 </div>
             </footer>
         </div>
+
+        <!-- AI Analysis Modal -->
+        <div v-if="showAIModal" class="modal-overlay" @click.self="closeAIModal">
+            <div class="modal-content">
+                <!-- Modal Header -->
+                <div class="bg-gradient-to-r from-purple-600 to-indigo-600 text-white p-6 rounded-t-lg">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <h2 class="text-2xl font-bold flex items-center gap-2">
+                                🤖 AI Stock Analysis
+                            </h2>
+                            <p class="text-purple-100 mt-1" v-if="aiAnalysisData">
+                                {{ aiAnalysisData.symbol }} • Powered by Google Gemini
+                            </p>
+                        </div>
+                        <button @click="closeAIModal" class="text-white hover:text-purple-200 text-3xl leading-none">
+                            ×
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Modal Body -->
+                <div class="p-6">
+                    <!-- Loading State -->
+                    <div v-if="aiLoading" class="text-center py-12">
+                        <div class="loading-spinner mx-auto mb-4"></div>
+                        <p class="text-gray-600 text-lg">AI is analyzing the stock...</p>
+                        <p class="text-gray-500 text-sm mt-2">This may take a few moments</p>
+                    </div>
+
+                    <!-- Error State -->
+                    <div v-else-if="aiError" class="text-center py-12">
+                        <div class="text-6xl mb-4">⚠️</div>
+                        <h3 class="text-xl font-semibold text-gray-700 mb-2">Analysis Error</h3>
+                        <p class="text-gray-600">{{ aiError }}</p>
+                        <button @click="closeAIModal" 
+                                class="mt-4 px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700">
+                            Close
+                        </button>
+                    </div>
+
+                    <!-- Success State with Analysis -->
+                    <div v-else-if="aiAnalysisData && aiAnalysisData.ai_analysis">
+                        <!-- Stock Quick Stats -->
+                        <div v-if="aiAnalysisData.stock_data" class="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg p-4 mb-6 border border-purple-200">
+                            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                <div>
+                                    <div class="text-sm text-gray-600">Price</div>
+                                    <div class="text-lg font-bold text-gray-800">₹{{ aiAnalysisData.stock_data.price }}</div>
+                                </div>
+                                <div>
+                                    <div class="text-sm text-gray-600">Score</div>
+                                    <div class="text-lg font-bold" :style="{color: aiAnalysisData.stock_data.color}">
+                                        {{ aiAnalysisData.stock_data.total_score }}/120
+                                    </div>
+                                </div>
+                                <div>
+                                    <div class="text-sm text-gray-600">Classification</div>
+                                    <div class="text-sm font-semibold text-gray-800">{{ aiAnalysisData.stock_data.classification }}</div>
+                                </div>
+                                <div>
+                                    <div class="text-sm text-gray-600">Trend</div>
+                                    <div class="text-sm font-semibold text-gray-800">{{ aiAnalysisData.stock_data.trend_strength }}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- AI Analysis Content -->
+                        <div class="ai-analysis-content text-gray-700 bg-gray-50 rounded-lg p-6">
+                            <div v-html="formatAnalysis(aiAnalysisData.ai_analysis.analysis)"></div>
+                        </div>
+
+                        <!-- Timestamp -->
+                        <div class="text-center text-sm text-gray-500 mt-4">
+                            Analysis generated at {{ formatTimestamp(aiAnalysisData.ai_analysis.timestamp) }}
+                        </div>
+
+                        <!-- Actions -->
+                        <div class="flex gap-3 mt-6">
+                            <button @click="copyAnalysis" 
+                                    class="flex-1 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold">
+                                📋 Copy Analysis
+                            </button>
+                            <button @click="closeAIModal" 
+                                    class="px-6 py-3 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-semibold">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -412,7 +589,13 @@
                     screeningResult: null,
                     expandedStocks: {},
                     sortColumn: 'total_score',
-                    sortDirection: 'desc'
+                    sortDirection: 'desc',
+                    // AI Analysis
+                    showAIModal: false,
+                    aiLoading: false,
+                    aiError: null,
+                    aiAnalysisData: null,
+                    quickAnalysisSymbol: ''
                 };
             },
             computed: {
@@ -598,6 +781,81 @@
                     a.href = url;
                     a.download = `nse_screener_results_${new Date().toISOString().split('T')[0]}.csv`;
                     a.click();
+                },
+                // AI Analysis Methods
+                async askAI(symbol) {
+                    this.showAIModal = true;
+                    this.aiLoading = true;
+                    this.aiError = null;
+                    this.aiAnalysisData = null;
+                    
+                    try {
+                        const response = await axios.get(`${this.apiUrl}/api/v2/stock/${symbol}/analyze`);
+                        
+                        if (response.data.error) {
+                            this.aiError = response.data.message || response.data.error;
+                        } else {
+                            this.aiAnalysisData = response.data;
+                        }
+                        
+                    } catch (error) {
+                        console.error('Error getting AI analysis:', error);
+                        if (error.response && error.response.data && error.response.data.detail) {
+                            this.aiError = error.response.data.detail;
+                        } else {
+                            this.aiError = 'Failed to get AI analysis. Please check if the Gemini API key is configured in the backend.';
+                        }
+                    } finally {
+                        this.aiLoading = false;
+                    }
+                },
+                async analyzeQuickStock() {
+                    if (!this.quickAnalysisSymbol || this.quickAnalysisSymbol.trim() === '') {
+                        alert('Please enter a stock symbol');
+                        return;
+                    }
+                    
+                    const symbol = this.quickAnalysisSymbol.trim().toUpperCase();
+                    await this.askAI(symbol);
+                },
+                closeAIModal() {
+                    this.showAIModal = false;
+                    this.aiAnalysisData = null;
+                    this.aiError = null;
+                    this.quickAnalysisSymbol = '';
+                },
+                formatAnalysis(text) {
+                    if (!text) return '';
+                    
+                    // Convert markdown-style formatting to HTML
+                    let formatted = text
+                        // Bold text **text**
+                        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                        // Headers with ##
+                        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+                        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+                        // Line breaks
+                        .replace(/\n\n/g, '<br><br>')
+                        .replace(/\n/g, '<br>');
+                    
+                    return formatted;
+                },
+                formatTimestamp(timestamp) {
+                    if (!timestamp) return '';
+                    const date = new Date(timestamp);
+                    return date.toLocaleString();
+                },
+                copyAnalysis() {
+                    if (!this.aiAnalysisData || !this.aiAnalysisData.ai_analysis) return;
+                    
+                    const text = `AI Analysis for ${this.aiAnalysisData.symbol}\n\n${this.aiAnalysisData.ai_analysis.analysis}\n\nGenerated at: ${this.formatTimestamp(this.aiAnalysisData.ai_analysis.timestamp)}`;
+                    
+                    navigator.clipboard.writeText(text).then(() => {
+                        alert('Analysis copied to clipboard!');
+                    }).catch(err => {
+                        console.error('Failed to copy:', err);
+                        alert('Failed to copy to clipboard');
+                    });
                 }
             },
             mounted() {

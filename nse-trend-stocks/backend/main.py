@@ -14,6 +14,12 @@ from datetime import datetime
 import logging
 import time
 import requests
+from google import genai
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -24,6 +30,20 @@ logger = logging.getLogger(__name__)
 
 # Suppress verbose yfinance logging
 logging.getLogger('yfinance').setLevel(logging.ERROR)
+
+# Configure Gemini AI
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+gemini_client = None
+
+if GEMINI_API_KEY:
+    try:
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        logger.info("✓ Gemini AI configured successfully with google-genai")
+    except Exception as e:
+        logger.error(f"Failed to configure Gemini AI: {e}")
+        gemini_client = None
+else:
+    logger.warning("⚠ GEMINI_API_KEY not found in environment variables. AI analysis will not be available.")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -834,6 +854,9 @@ def process_stock(symbol: str) -> Optional[Dict[str, Any]]:
                 'distance_50sma': round(((latest['Close'] - latest['SMA_50']) / latest['SMA_50']) * 100, 2) if pd.notna(latest['SMA_50']) else None,
                 'distance_200sma': round(((latest['Close'] - latest['SMA_200']) / latest['SMA_200']) * 100, 2) if pd.notna(latest['SMA_200']) else None,
             },
+            'signals': generate_trading_signals(df_with_indicators),
+            'insights': generate_stock_insights(df_with_indicators, score_result, symbol),
+            'trend_strength': calculate_trend_strength(df_with_indicators),
             'timestamp': datetime.now().isoformat()
         }
         
@@ -845,6 +868,213 @@ def process_stock(symbol: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Error processing {symbol}: {e}")
         return None
+
+# =====================================================
+# HELPER FUNCTIONS FOR STOCK ANALYSIS
+# =====================================================
+
+def generate_trading_signals(df: pd.DataFrame) -> List[str]:
+    """Generate trading signals from technical indicators"""
+    signals = []
+    
+    try:
+        latest = df.iloc[-1]
+        
+        # MACD Signal
+        if pd.notna(latest['MACD']) and pd.notna(latest['MACD_Signal']):
+            if latest['MACD'] > latest['MACD_Signal'] and latest['MACD_Hist'] > 0:
+                signals.append("Bullish MACD crossover")
+        
+        # RSI Signal
+        if pd.notna(latest['RSI']):
+            if 60 <= latest['RSI'] <= 70:
+                signals.append("RSI in strong momentum zone")
+            elif latest['RSI'] > 80:
+                signals.append("RSI overbought - potential pullback")
+        
+        # Trend Signal
+        if pd.notna(latest['SMA_50']) and pd.notna(latest['SMA_200']):
+            if latest['Close'] > latest['SMA_50'] > latest['SMA_200']:
+                signals.append("Strong uptrend - all MAs aligned")
+        
+        # Volume Signal
+        if pd.notna(latest['Vol_Ratio']) and latest['Vol_Ratio'] > 150:
+            signals.append("High volume surge detected")
+        
+        # Breakout Signal
+        if pd.notna(latest['High_52W']) and latest['Close'] >= latest['High_52W'] * 0.995:
+            signals.append("Near 52-week high breakout")
+            
+    except Exception as e:
+        logger.error(f"Error generating signals: {e}")
+    
+    return signals if signals else ["No strong signals detected"]
+
+
+def generate_stock_insights(df: pd.DataFrame, score_result: Dict, symbol: str) -> List[str]:
+    """Generate human-readable insights about the stock"""
+    insights = []
+    
+    try:
+        latest = df.iloc[-1]
+        
+        # Trend insight
+        if score_result['category_scores'].get('Trend Alignment', 0) >= 20:
+            insights.append(f"{symbol} is in a strong uptrend with well-aligned moving averages")
+        elif score_result['category_scores'].get('Trend Alignment', 0) >= 15:
+            insights.append(f"{symbol} shows positive trend alignment")
+        
+        # Momentum insight
+        if pd.notna(latest['ADX']) and latest['ADX'] > 30:
+            insights.append(f"Strong trend strength with ADX at {latest['ADX']:.1f}")
+        
+        # Volume insight
+        if pd.notna(latest['Vol_Ratio']) and latest['Vol_Ratio'] > 150:
+            insights.append(f"Exceptional volume activity at {latest['Vol_Ratio']:.0f}% of average")
+        
+        # Overall strength
+        if score_result['total_score'] >= 85:
+            insights.append("This stock demonstrates exceptional technical strength across all metrics")
+        elif score_result['total_score'] >= 70:
+            insights.append("Strong technical setup with multiple positive indicators")
+            
+    except Exception as e:
+        logger.error(f"Error generating insights: {e}")
+    
+    return insights if insights else ["Limited insights available"]
+
+
+def calculate_trend_strength(df: pd.DataFrame) -> str:
+    """Calculate overall trend strength"""
+    try:
+        latest = df.iloc[-1]
+        
+        # Check multiple factors
+        factors = 0
+        max_factors = 5
+        
+        # MA alignment
+        if pd.notna(latest['EMA_20']) and pd.notna(latest['SMA_50']) and pd.notna(latest['SMA_200']):
+            if latest['Close'] > latest['EMA_20'] > latest['SMA_50'] > latest['SMA_200']:
+                factors += 2
+            elif latest['Close'] > latest['SMA_50'] > latest['SMA_200']:
+                factors += 1
+        
+        # ADX strength
+        if pd.notna(latest['ADX']):
+            if latest['ADX'] > 30:
+                factors += 1
+            elif latest['ADX'] > 25:
+                factors += 0.5
+        
+        # RSI momentum
+        if pd.notna(latest['RSI']) and 55 <= latest['RSI'] <= 75:
+            factors += 1
+        
+        # Volume confirmation
+        if pd.notna(latest['Vol_Ratio']) and latest['Vol_Ratio'] > 120:
+            factors += 0.5
+        
+        # Classify
+        strength_ratio = factors / max_factors
+        if strength_ratio >= 0.8:
+            return "Very Strong"
+        elif strength_ratio >= 0.6:
+            return "Strong"
+        elif strength_ratio >= 0.4:
+            return "Moderate"
+        elif strength_ratio >= 0.2:
+            return "Weak"
+        else:
+            return "Very Weak"
+            
+    except Exception as e:
+        logger.error(f"Error calculating trend strength: {e}")
+        return "Unknown"
+
+
+# =====================================================
+# GEMINI AI ANALYSIS
+# =====================================================
+
+def analyze_stock_with_gemini(symbol: str, stock_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Use Gemini AI to provide comprehensive stock analysis"""
+    
+    if not gemini_client:
+        return {
+            "error": "Gemini API key not configured",
+            "message": "Please set GEMINI_API_KEY environment variable to use AI analysis"
+        }
+    
+    try:
+        # Prepare the prompt with stock data
+        prompt = f"""You are a professional stock analyst. Analyze the following NSE stock and provide detailed insights.
+
+Stock Symbol: {symbol}
+Current Price: ₹{stock_data['price']}
+Price Change: {stock_data['change_pct']}%
+Sector: {stock_data['sector']}
+
+Technical Analysis Score: {stock_data['total_score']}/120
+Classification: {stock_data['classification']}
+
+Technical Indicators:
+- RSI: {stock_data['indicators']['rsi']}
+- ADX (Trend Strength): {stock_data['indicators']['adx']}
+- MACD: {stock_data['indicators']['macd']}
+- Volume Ratio: {stock_data['indicators']['volume_ratio']}%
+- Distance from 50-day SMA: {stock_data['indicators']['distance_50sma']}%
+- Distance from 200-day SMA: {stock_data['indicators']['distance_200sma']}%
+
+Category Scores:
+{', '.join([f"{k}: {v}" for k, v in stock_data['category_scores'].items()])}
+
+Trend Strength: {stock_data.get('trend_strength', 'N/A')}
+
+Current Signals: {', '.join(stock_data.get('signals', []))}
+
+Please provide a comprehensive analysis covering:
+
+1. **Uptrend Analysis**: Why is this stock in an uptrend? What technical factors are driving it?
+
+2. **Technical Health**: Evaluate the technical strength. Are the indicators confirming the trend? Any divergences or warnings?
+
+3. **Fundamental Perspective**: Based on the sector and general market knowledge, what fundamental factors might be supporting this trend? (Note: You can use general knowledge about the sector and major companies)
+
+4. **Risk Assessment**: What are the potential risks? Any overbought conditions or warning signs?
+
+5. **Trading Strategy**: 
+   - Entry points and timing
+   - Stop loss recommendations
+   - Target levels
+   - Holding period suggestion (short/medium/long term)
+
+6. **Overall Recommendation**: Is this a good stock to invest in right now? Rate it on a scale of 1-10 and provide reasoning.
+
+Please be specific, actionable, and balanced in your analysis. Format your response in clear sections."""
+
+        # Use Gemini 2.5 Flash model with new API
+        response = gemini_client.models.generate_content(
+            model='gemini-2.0-flash-exp',
+            contents=prompt
+        )
+        
+        return {
+            "symbol": symbol,
+            "analysis": response.text,
+            "timestamp": datetime.now().isoformat(),
+            "model": "gemini-2.0-flash-exp",
+            "status": "success"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in Gemini analysis for {symbol}: {e}")
+        return {
+            "error": str(e),
+            "message": "Failed to generate AI analysis",
+            "status": "error"
+        }
+
 
 # =====================================================
 # API ENDPOINTS
@@ -859,8 +1089,13 @@ async def root():
         "endpoints": {
             "screen": "/api/v2/stocks/screen",
             "stock_detail": "/api/v2/stock/{symbol}",
+            "ai_analysis": "/api/v2/stock/{symbol}/analyze",
             "sectors": "/api/v2/sectors",
             "presets": "/api/v2/presets"
+        },
+        "features": {
+            "technical_analysis": "120-point scoring system with comprehensive indicators",
+            "ai_analysis": "Gemini AI-powered stock analysis with fundamental and technical insights"
         }
     }
 
@@ -1026,6 +1261,57 @@ async def get_stock_details(symbol: str):
         logger.error(f"Error getting stock details: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/v2/stock/{symbol}/analyze")
+async def analyze_stock_ai(symbol: str):
+    """
+    Get AI-powered analysis for a stock using Google's Gemini
+    
+    This endpoint provides comprehensive analysis including:
+    - Why the stock is in an uptrend
+    - Technical analysis evaluation
+    - Fundamental perspective
+    - Risk assessment
+    - Trading strategy recommendations
+    - Investment rating
+    """
+    
+    try:
+        # First get the stock data and technical analysis
+        logger.info(f"Fetching stock data for AI analysis: {symbol}")
+        stock_data = process_stock(symbol)
+        
+        if not stock_data:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Stock {symbol} not found or unable to fetch data"
+            )
+        
+        # Get AI analysis from Gemini
+        logger.info(f"Requesting Gemini AI analysis for {symbol}")
+        ai_analysis = analyze_stock_with_gemini(symbol, stock_data)
+        
+        # Check if AI analysis was successful
+        if ai_analysis.get('status') == 'error':
+            return {
+                "stock_data": stock_data,
+                "ai_analysis": None,
+                "error": ai_analysis.get('error'),
+                "message": ai_analysis.get('message')
+            }
+        
+        # Return combined data
+        return {
+            "stock_data": stock_data,
+            "ai_analysis": ai_analysis,
+            "status": "success"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in AI stock analysis for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/v2/sectors")
 async def get_sectors():
     """Get list of available sectors"""
@@ -1118,7 +1404,7 @@ if __name__ == "__main__":
     logger.info("=" * 60)
     logger.info("NSE Stock Screener API - Starting Up")
     logger.info("=" * 60)
-    logger.info(f"Testing yfinance connectivity...")
+    logger.info("Testing yfinance connectivity...")
     
     # Quick test to verify yfinance is working
     try:
