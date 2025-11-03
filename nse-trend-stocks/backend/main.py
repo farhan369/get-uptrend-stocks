@@ -1,25 +1,51 @@
 """
-NSE Stock Screener - Enhanced Backend API
-FastAPI server with comprehensive technical analysis and scoring
+NSE Stock Screener - Enhanced Backend API with Paper Trading
+FastAPI server with comprehensive technical analysis, scoring, and paper trading
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
+from pathlib import Path
 from typing import Optional, List, Dict, Any
+from sqlalchemy.orm import Session
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import time
 import requests
 from google import genai
 import os
 from dotenv import load_dotenv
+from starlette.middleware.sessions import SessionMiddleware
 
 # Load environment variables
 load_dotenv()
+
+# Import database and auth modules
+from database import get_db, init_db
+from models import User, Portfolio, Trade, Position, Watchlist, OrderSide
+from schemas import (
+    UserCreate, UserResponse, Token,
+    PortfolioResponse, PortfolioSummary,
+    TradeCreate, TradeResponse, TradeExecutionResponse,
+    PositionResponse, WatchlistCreate, WatchlistResponse,
+    DashboardSummary
+)
+from auth import (
+    authenticate_user, create_access_token, get_password_hash,
+    get_current_active_user, ACCESS_TOKEN_EXPIRE_MINUTES
+)
+from trading_engine import TradingEngine
+from google_auth import (
+    oauth, is_google_oauth_configured, get_or_create_google_user,
+    create_google_user_token, GOOGLE_REDIRECT_URI
+)
 
 # Configure logging
 logging.basicConfig(
@@ -47,10 +73,38 @@ else:
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Enhanced NSE Stock Screener API",
-    version="2.0.0",
-    description="Advanced stock screening with 120-point scoring system"
+    title="Enhanced NSE Stock Screener API with Paper Trading",
+    version="3.0.0",
+    description="Advanced stock screening with 120-point scoring system and paper trading platform"
 )
+
+# Mount static files (frontend)
+frontend_path = Path(__file__).parent.parent / "frontend"
+if frontend_path.exists():
+    app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
+    logger.info(f"✓ Frontend static files mounted from {frontend_path}")
+
+# Add session middleware for OAuth state management
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production")
+)
+
+# Initialize database on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database tables on startup"""
+    try:
+        init_db()
+        logger.info("✓ Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+    
+    # Check Google OAuth configuration
+    if is_google_oauth_configured():
+        logger.info("✓ Google OAuth configured successfully")
+    else:
+        logger.warning("⚠ Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env")
 
 # CORS middleware
 app.add_middleware(
@@ -1084,18 +1138,37 @@ Please be specific, actionable, and balanced in your analysis. Format your respo
 async def root():
     """API root endpoint"""
     return {
-        "message": "Enhanced NSE Stock Screener API",
-        "version": "2.0.0",
+        "message": "Enhanced NSE Stock Screener API with Paper Trading",
+        "version": "3.0.0",
         "endpoints": {
-            "screen": "/api/v2/stocks/screen",
-            "stock_detail": "/api/v2/stock/{symbol}",
-            "ai_analysis": "/api/v2/stock/{symbol}/analyze",
-            "sectors": "/api/v2/sectors",
-            "presets": "/api/v2/presets"
+            "auth": {
+                "register": "/api/v2/auth/register",
+                "login": "/api/v2/auth/login",
+                "me": "/api/v2/auth/me",
+                "google_login": "/api/v2/auth/google/login",
+                "google_callback": "/api/v2/auth/google/callback"
+            },
+            "screening": {
+                "screen": "/api/v2/stocks/screen",
+                "stock_detail": "/api/v2/stock/{symbol}",
+                "ai_analysis": "/api/v2/stock/{symbol}/analyze",
+                "sectors": "/api/v2/sectors",
+                "presets": "/api/v2/presets"
+            },
+            "trading": {
+                "dashboard": "/api/v2/trading/dashboard",
+                "portfolio": "/api/v2/trading/portfolio",
+                "execute_trade": "/api/v2/trading/trade",
+                "positions": "/api/v2/trading/positions",
+                "trades": "/api/v2/trading/trades",
+                "watchlist": "/api/v2/trading/watchlist"
+            }
         },
         "features": {
             "technical_analysis": "120-point scoring system with comprehensive indicators",
-            "ai_analysis": "Gemini AI-powered stock analysis with fundamental and technical insights"
+            "ai_analysis": "Gemini AI-powered stock analysis with fundamental and technical insights",
+            "paper_trading": "Full paper trading platform with portfolio management and P&L tracking",
+            "authentication": "JWT-based secure user authentication"
         }
     }
 
@@ -1397,6 +1470,470 @@ async def test_fetch(symbol: str):
             "error": str(e),
             "message": "Failed to fetch data. Check if yfinance is up to date: pip install --upgrade yfinance"
         }
+
+
+# =====================================================
+# AUTHENTICATION ENDPOINTS
+# =====================================================
+
+@app.post("/api/v2/auth/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+async def register(user_data: UserCreate, db: Session = Depends(get_db)):
+    """
+    Register a new user account
+    
+    Creates a new user with email, username, and password.
+    Also creates a default portfolio with 10 lakhs initial balance.
+    """
+    # Check if user already exists
+    existing_user = db.query(User).filter(
+        (User.email == user_data.email) | (User.username == user_data.username)
+    ).first()
+    
+    if existing_user:
+        if existing_user.email == user_data.email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username already taken"
+            )
+    
+    # Create new user
+    hashed_password = get_password_hash(user_data.password)
+    new_user = User(
+        email=user_data.email,
+        username=user_data.username,
+        full_name=user_data.full_name,
+        hashed_password=hashed_password,
+        is_active=True
+    )
+    
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    # Create default portfolio
+    portfolio = Portfolio(
+        user_id=new_user.id,
+        name="Default Portfolio",
+        cash_balance=1000000.0,
+        initial_balance=1000000.0,
+        is_default=True
+    )
+    
+    db.add(portfolio)
+    db.commit()
+    
+    # Create access token
+    access_token = create_access_token(
+        data={"sub": new_user.id},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": UserResponse.model_validate(new_user)
+    }
+
+
+@app.post("/api/v2/auth/login", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    """
+    Login with username/email and password
+    
+    Returns JWT access token for authenticated requests.
+    """
+    user = authenticate_user(db, form_data.username, form_data.password)
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token = create_access_token(
+        data={"sub": user.id},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": UserResponse.model_validate(user)
+    }
+
+
+@app.get("/api/v2/auth/me", response_model=UserResponse)
+async def get_current_user_info(current_user: User = Depends(get_current_active_user)):
+    """Get current logged-in user information"""
+    return UserResponse.model_validate(current_user)
+
+
+@app.get("/api/v2/auth/google/login")
+async def google_login(request: Request):
+    """
+    Initiate Google OAuth login flow
+    
+    Redirects user to Google's OAuth consent screen.
+    After authentication, Google will redirect back to the callback URL.
+    """
+    if not is_google_oauth_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google OAuth is not configured. Please contact the administrator."
+        )
+    
+    try:
+        # Generate the OAuth authorization URL
+        redirect_uri = GOOGLE_REDIRECT_URI
+        return await oauth.google.authorize_redirect(request, redirect_uri)
+    except Exception as e:
+        logger.error(f"Error initiating Google OAuth: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initiate Google login: {str(e)}"
+        )
+
+
+@app.get("/api/v2/auth/google/callback")
+async def google_callback(request: Request, db: Session = Depends(get_db)):
+    """
+    Handle Google OAuth callback
+    
+    This endpoint is called by Google after user authentication.
+    It exchanges the authorization code for user information,
+    creates or updates the user account, and returns a JWT token.
+    """
+    if not is_google_oauth_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google OAuth is not configured"
+        )
+    
+    try:
+        # Exchange authorization code for access token
+        token = await oauth.google.authorize_access_token(request)
+        
+        # Get user info from Google
+        user_info = token.get('userinfo')
+        if not user_info:
+            # If userinfo is not in token, fetch it separately
+            resp = await oauth.google.get('https://www.googleapis.com/oauth2/v3/userinfo', token=token)
+            user_info = resp.json()
+        
+        logger.info(f"Google OAuth successful for email: {user_info.get('email')}")
+        
+        # Get or create user in our database
+        user = await get_or_create_google_user(user_info, db)
+        
+        # Create JWT token for our application
+        access_token = create_google_user_token(user)
+        
+        # Get frontend URL from environment or use default
+        frontend_url = os.getenv("FRONTEND_URL", "/static")
+        
+        # For production with same-server deployment:
+        # Store token in a temporary session or redirect with token
+        # Option 1: Redirect with token in URL (works for same-server deployment)
+        if frontend_url.startswith("/static"):
+            # Same server - redirect to static files
+            return RedirectResponse(
+                url=f"/static/auth-success.html?token={access_token}&user={user.id}",
+                status_code=302
+            )
+        else:
+            # Different server - redirect to frontend URL with token
+            return RedirectResponse(
+                url=f"{frontend_url}/auth-callback.html?token={access_token}",
+                status_code=302
+            )
+        
+    except Exception as e:
+        logger.error(f"Error in Google OAuth callback: {e}")
+        
+        # Redirect to frontend with error
+        # frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        # return RedirectResponse(url=f"{frontend_url}/auth/error?message={str(e)}")
+        
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Authentication failed: {str(e)}"
+        )
+
+
+# =====================================================
+# PAPER TRADING ENDPOINTS
+# =====================================================
+
+@app.get("/api/v2/trading/dashboard", response_model=DashboardSummary)
+async def get_dashboard(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get complete dashboard summary for the user
+    
+    Includes portfolio, positions, recent trades, watchlist, and top performers.
+    """
+    # Get default portfolio
+    portfolio = db.query(Portfolio).filter(
+        Portfolio.user_id == current_user.id,
+        Portfolio.is_default == True
+    ).first()
+    
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    
+    # Update portfolio values
+    engine = TradingEngine(db)
+    engine.update_portfolio_values(portfolio)
+    db.refresh(portfolio)
+    
+    # Get positions
+    positions = db.query(Position).filter(Position.portfolio_id == portfolio.id).all()
+    
+    # Calculate portfolio metrics
+    total_holdings_value = sum(p.current_value for p in positions)
+    total_portfolio_value = portfolio.cash_balance + total_holdings_value
+    
+    # Get recent trades (last 10)
+    recent_trades = db.query(Trade).filter(
+        Trade.user_id == current_user.id
+    ).order_by(Trade.created_at.desc()).limit(10).all()
+    
+    # Get watchlist
+    watchlist = db.query(Watchlist).filter(
+        Watchlist.user_id == current_user.id,
+        Watchlist.is_active == True
+    ).all()
+    
+    # Get top gainers and losers
+    positions_sorted = sorted(positions, key=lambda x: x.profit_loss_pct, reverse=True)
+    top_gainers = positions_sorted[:5] if len(positions_sorted) >= 5 else positions_sorted
+    top_losers = list(reversed(positions_sorted[-5:])) if len(positions_sorted) >= 5 else []
+    
+    return {
+        "user": UserResponse.model_validate(current_user),
+        "portfolio": {
+            "portfolio": PortfolioResponse.model_validate(portfolio),
+            "positions": [PositionResponse.model_validate(p) for p in positions],
+            "total_portfolio_value": total_portfolio_value,
+            "total_holdings_value": total_holdings_value,
+            "cash_balance": portfolio.cash_balance,
+            "total_profit_loss": portfolio.total_profit_loss,
+            "total_profit_loss_pct": portfolio.total_profit_loss_pct,
+            "num_positions": len(positions)
+        },
+        "recent_trades": [TradeResponse.model_validate(t) for t in recent_trades],
+        "watchlist": [WatchlistResponse.model_validate(w) for w in watchlist],
+        "top_gainers": [PositionResponse.model_validate(p) for p in top_gainers],
+        "top_losers": [PositionResponse.model_validate(p) for p in top_losers]
+    }
+
+
+@app.get("/api/v2/trading/portfolio", response_model=PortfolioSummary)
+async def get_portfolio(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get portfolio summary with all positions"""
+    portfolio = db.query(Portfolio).filter(
+        Portfolio.user_id == current_user.id,
+        Portfolio.is_default == True
+    ).first()
+    
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    
+    # Update portfolio values
+    engine = TradingEngine(db)
+    engine.update_portfolio_values(portfolio)
+    db.refresh(portfolio)
+    
+    positions = db.query(Position).filter(Position.portfolio_id == portfolio.id).all()
+    
+    total_holdings_value = sum(p.current_value for p in positions)
+    total_portfolio_value = portfolio.cash_balance + total_holdings_value
+    
+    return {
+        "portfolio": PortfolioResponse.model_validate(portfolio),
+        "positions": [PositionResponse.model_validate(p) for p in positions],
+        "total_portfolio_value": total_portfolio_value,
+        "total_holdings_value": total_holdings_value,
+        "cash_balance": portfolio.cash_balance,
+        "total_profit_loss": portfolio.total_profit_loss,
+        "total_profit_loss_pct": portfolio.total_profit_loss_pct,
+        "num_positions": len(positions)
+    }
+
+
+@app.post("/api/v2/trading/trade", response_model=TradeExecutionResponse)
+async def execute_trade(
+    trade_data: TradeCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Execute a BUY or SELL order
+    
+    Supports MARKET, LIMIT, and STOP_LOSS order types.
+    """
+    # Get user's portfolio
+    portfolio = db.query(Portfolio).filter(
+        Portfolio.user_id == current_user.id,
+        Portfolio.is_default == True
+    ).first()
+    
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    
+    # Initialize trading engine
+    engine = TradingEngine(db)
+    
+    # Execute trade based on order side
+    if trade_data.order_side == OrderSide.BUY:
+        success, message, trade, position = engine.execute_buy_order(
+            current_user, portfolio, trade_data
+        )
+    else:  # SELL
+        success, message, trade, position = engine.execute_sell_order(
+            current_user, portfolio, trade_data
+        )
+    
+    if not success:
+        raise HTTPException(status_code=400, detail=message)
+    
+    # Refresh portfolio
+    db.refresh(portfolio)
+    
+    return {
+        "success": True,
+        "message": message,
+        "trade": TradeResponse.model_validate(trade) if trade else None,
+        "portfolio": PortfolioResponse.model_validate(portfolio),
+        "position": PositionResponse.model_validate(position) if position else None
+    }
+
+
+@app.get("/api/v2/trading/positions", response_model=List[PositionResponse])
+async def get_positions(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get all current positions"""
+    portfolio = db.query(Portfolio).filter(
+        Portfolio.user_id == current_user.id,
+        Portfolio.is_default == True
+    ).first()
+    
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    
+    # Update portfolio values
+    engine = TradingEngine(db)
+    engine.update_portfolio_values(portfolio)
+    
+    positions = db.query(Position).filter(Position.portfolio_id == portfolio.id).all()
+    
+    return [PositionResponse.model_validate(p) for p in positions]
+
+
+@app.get("/api/v2/trading/trades", response_model=List[TradeResponse])
+async def get_trades(
+    limit: int = 50,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get trade history"""
+    trades = db.query(Trade).filter(
+        Trade.user_id == current_user.id
+    ).order_by(Trade.created_at.desc()).limit(limit).all()
+    
+    return [TradeResponse.model_validate(t) for t in trades]
+
+
+@app.post("/api/v2/trading/watchlist", response_model=WatchlistResponse, status_code=status.HTTP_201_CREATED)
+async def add_to_watchlist(
+    watchlist_data: WatchlistCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Add a stock to watchlist"""
+    # Check if already in watchlist
+    existing = db.query(Watchlist).filter(
+        Watchlist.user_id == current_user.id,
+        Watchlist.symbol == watchlist_data.symbol,
+        Watchlist.is_active == True
+    ).first()
+    
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{watchlist_data.symbol} is already in your watchlist"
+        )
+    
+    # Get current price
+    engine = TradingEngine(db)
+    current_price = engine.get_current_price(watchlist_data.symbol)
+    
+    # Create watchlist item
+    watchlist = Watchlist(
+        user_id=current_user.id,
+        symbol=watchlist_data.symbol,
+        name=watchlist_data.name,
+        sector=watchlist_data.sector,
+        added_price=current_price,
+        notes=watchlist_data.notes,
+        alert_price_high=watchlist_data.alert_price_high,
+        alert_price_low=watchlist_data.alert_price_low
+    )
+    
+    db.add(watchlist)
+    db.commit()
+    db.refresh(watchlist)
+    
+    return WatchlistResponse.model_validate(watchlist)
+
+
+@app.get("/api/v2/trading/watchlist", response_model=List[WatchlistResponse])
+async def get_watchlist(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get user's watchlist"""
+    watchlist = db.query(Watchlist).filter(
+        Watchlist.user_id == current_user.id,
+        Watchlist.is_active == True
+    ).order_by(Watchlist.created_at.desc()).all()
+    
+    return [WatchlistResponse.model_validate(w) for w in watchlist]
+
+
+@app.delete("/api/v2/trading/watchlist/{watchlist_id}")
+async def remove_from_watchlist(
+    watchlist_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Remove a stock from watchlist"""
+    watchlist = db.query(Watchlist).filter(
+        Watchlist.id == watchlist_id,
+        Watchlist.user_id == current_user.id
+    ).first()
+    
+    if not watchlist:
+        raise HTTPException(status_code=404, detail="Watchlist item not found")
+    
+    watchlist.is_active = False
+    db.commit()
+    
+    return {"message": "Removed from watchlist"}
+
 
 if __name__ == "__main__":
     import uvicorn

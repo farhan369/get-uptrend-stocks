@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - NSE Stock Trading</title>
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.3.4/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="./css/styles.css">
+</head>
+<body class="bg-gray-50">
+    <div id="app">
+        <!-- Navigation -->
+        <nav class="bg-gradient-to-r from-blue-600 to-blue-800 text-white shadow-lg">
+            <div class="container mx-auto px-4">
+                <div class="flex items-center justify-between h-16">
+                    <div class="flex items-center gap-8">
+                        <div class="flex items-center gap-2">
+                            <span class="text-2xl">📈</span>
+                            <span class="text-xl font-bold">NSE Stock Trading</span>
+                        </div>
+                        <div class="flex gap-4">
+                            <a href="./dashboard.html" class="px-3 py-2 rounded-lg bg-blue-700 font-semibold">Dashboard</a>
+                            <a href="./screener.html" class="px-3 py-2 rounded-lg hover:bg-blue-700 font-semibold">Stock Screener</a>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <div class="text-right">
+                            <div class="text-sm opacity-90">Welcome,</div>
+                            <div class="font-semibold">{{ user?.full_name || user?.username }}</div>
+                        </div>
+                        <button @click="logout" class="px-4 py-2 bg-red-500 rounded-lg hover:bg-red-600 font-semibold transition-colors">
+                            Logout
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <div class="container mx-auto px-4 py-8">
+            <!-- Welcome Section -->
+            <div class="bg-gradient-to-r from-purple-600 to-indigo-600 rounded-lg shadow-lg p-8 mb-6 text-white">
+                <h1 class="text-3xl font-bold mb-2">Welcome to Your Trading Dashboard! 🎉</h1>
+                <p class="text-purple-100">Manage your portfolio, track performance, and discover new opportunities</p>
+            </div>
+
+            <!-- Loading State -->
+            <div v-if="loading" class="text-center py-12">
+                <div class="loading-spinner mx-auto mb-4"></div>
+                <p class="text-gray-600">Loading your dashboard...</p>
+            </div>
+
+            <!-- Dashboard Content -->
+            <div v-else>
+                <!-- Portfolio Summary -->
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <div class="text-sm text-gray-600 mb-2">Total Portfolio Value</div>
+                        <div class="text-3xl font-bold text-blue-600">₹{{ formatNumber(portfolioValue) }}</div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <div class="text-sm text-gray-600 mb-2">Cash Balance</div>
+                        <div class="text-3xl font-bold text-green-600">₹{{ formatNumber(cashBalance) }}</div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <div class="text-sm text-gray-600 mb-2">Total P&L</div>
+                        <div class="text-3xl font-bold" :class="profitLoss >= 0 ? 'text-green-600' : 'text-red-600'">
+                            {{ profitLoss >= 0 ? '+' : '' }}₹{{ formatNumber(profitLoss) }}
+                        </div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <div class="text-sm text-gray-600 mb-2">Active Positions</div>
+                        <div class="text-3xl font-bold text-purple-600">{{ positions.length }}</div>
+                    </div>
+                </div>
+
+                <!-- Quick Actions -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <a href="./screener.html" class="bg-white rounded-lg shadow-md p-6 hover:shadow-xl transition-shadow">
+                        <div class="text-4xl mb-3">🔍</div>
+                        <h3 class="text-xl font-bold text-gray-800 mb-2">Stock Screener</h3>
+                        <p class="text-gray-600">Find high-potential stocks with our 120-point analysis system</p>
+                    </a>
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <div class="text-4xl mb-3">💰</div>
+                        <h3 class="text-xl font-bold text-gray-800 mb-2">Execute Trade</h3>
+                        <p class="text-gray-600 mb-4">Buy or sell stocks with market or limit orders</p>
+                        <button class="text-blue-600 hover:text-blue-800 font-semibold">Coming Soon →</button>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <div class="text-4xl mb-3">📊</div>
+                        <h3 class="text-xl font-bold text-gray-800 mb-2">Portfolio Analytics</h3>
+                        <p class="text-gray-600 mb-4">Detailed performance charts and analysis</p>
+                        <button class="text-blue-600 hover:text-blue-800 font-semibold">Coming Soon →</button>
+                    </div>
+                </div>
+
+                <!-- Current Positions -->
+                <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4">Current Positions</h2>
+                    <div v-if="positions.length === 0" class="text-center py-8 text-gray-500">
+                        <div class="text-4xl mb-2">📈</div>
+                        <p>No positions yet. Start trading to see your holdings here!</p>
+                    </div>
+                    <div v-else class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-gray-100">
+                                <tr>
+                                    <th class="px-4 py-3 text-left text-sm font-semibold">Symbol</th>
+                                    <th class="px-4 py-3 text-right text-sm font-semibold">Quantity</th>
+                                    <th class="px-4 py-3 text-right text-sm font-semibold">Avg. Price</th>
+                                    <th class="px-4 py-3 text-right text-sm font-semibold">Current Price</th>
+                                    <th class="px-4 py-3 text-right text-sm font-semibold">P&L</th>
+                                    <th class="px-4 py-3 text-right text-sm font-semibold">P&L %</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="position in positions" :key="position.id" class="border-b hover:bg-gray-50">
+                                    <td class="px-4 py-3 font-semibold">{{ position.symbol }}</td>
+                                    <td class="px-4 py-3 text-right">{{ position.quantity }}</td>
+                                    <td class="px-4 py-3 text-right">₹{{ position.average_buy_price.toFixed(2) }}</td>
+                                    <td class="px-4 py-3 text-right">₹{{ position.current_price.toFixed(2) }}</td>
+                                    <td class="px-4 py-3 text-right" :class="position.profit_loss >= 0 ? 'text-green-600' : 'text-red-600'">
+                                        {{ position.profit_loss >= 0 ? '+' : '' }}₹{{ position.profit_loss.toFixed(2) }}
+                                    </td>
+                                    <td class="px-4 py-3 text-right font-semibold" :class="position.profit_loss_pct >= 0 ? 'text-green-600' : 'text-red-600'">
+                                        {{ position.profit_loss_pct >= 0 ? '+' : '' }}{{ position.profit_loss_pct.toFixed(2) }}%
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Recent Trades -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4">Recent Trades</h2>
+                    <div v-if="recentTrades.length === 0" class="text-center py-8 text-gray-500">
+                        <p>No trades yet. Your trading history will appear here.</p>
+                    </div>
+                    <div v-else class="space-y-3">
+                        <div v-for="trade in recentTrades" :key="trade.id" 
+                             class="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50">
+                            <div class="flex items-center gap-4">
+                                <div class="w-16 h-16 rounded-lg flex items-center justify-center font-bold text-white"
+                                     :class="trade.order_side === 'BUY' ? 'bg-green-500' : 'bg-red-500'">
+                                    {{ trade.order_side }}
+                                </div>
+                                <div>
+                                    <div class="font-bold text-lg">{{ trade.symbol }}</div>
+                                    <div class="text-sm text-gray-600">{{ trade.quantity }} shares @ ₹{{ trade.price.toFixed(2) }}</div>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <div class="font-semibold text-gray-800">₹{{ trade.total_value.toFixed(2) }}</div>
+                                <div class="text-sm text-gray-600">{{ formatDate(trade.created_at) }}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="./js/config.js"></script>
+    <script src="./js/auth.js"></script>
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    user: null,
+                    loading: true,
+                    portfolioValue: 0,
+                    cashBalance: 0,
+                    profitLoss: 0,
+                    positions: [],
+                    recentTrades: []
+                };
+            },
+            methods: {
+                async loadDashboard() {
+                    try {
+                        const response = await axios.get(
+                            `${API_URL}/api/v2/trading/dashboard`,
+                            getAuthHeader()
+                        );
+
+                        const data = response.data;
+                        this.user = data.user;
+                        this.cashBalance = data.portfolio.cash_balance;
+                        this.portfolioValue = data.portfolio.total_portfolio_value;
+                        this.profitLoss = data.portfolio.total_profit_loss;
+                        this.positions = data.portfolio.positions;
+                        this.recentTrades = data.recent_trades.slice(0, 5);
+
+                    } catch (error) {
+                        console.error('Error loading dashboard:', error);
+                        if (error.response?.status === 401) {
+                            logout();
+                        }
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                formatNumber(num) {
+                    return new Intl.NumberFormat('en-IN').format(num.toFixed(2));
+                },
+                formatDate(dateString) {
+                    return new Date(dateString).toLocaleDateString('en-IN', {
+                        day: '2-digit',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    });
+                },
+                logout() {
+                    logout();
+                }
+            },
+            mounted() {
+                // Check authentication
+                if (!isAuthenticated()) {
+                    window.location.href = './index.html';
+                    return;
+                }
+
+                // Load user info
+                this.user = getCurrentUser();
+                
+                // Load dashboard data
+                this.loadDashboard();
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
+

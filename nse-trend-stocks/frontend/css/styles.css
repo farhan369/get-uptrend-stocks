@@ -1,0 +1,138 @@
+/* Custom styles for NSE Stock Trading Platform */
+
+/* Animations */
+@keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 15px rgba(4, 120, 87, 0.4); }
+    50% { box-shadow: 0 0 25px rgba(4, 120, 87, 0.7); }
+}
+
+.exceptional-glow {
+    animation: pulse-glow 2s infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Loading spinners */
+.loading-spinner {
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #3498db;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+}
+
+.spinner-small {
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #3498db;
+    border-radius: 50%;
+    width: 16px;
+    height: 16px;
+    animation: spin 1s linear infinite;
+    display: inline-block;
+}
+
+.mini-spinner {
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #3498db;
+    border-radius: 50%;
+    width: 16px;
+    height: 16px;
+    animation: spin 1s linear infinite;
+    display: inline-block;
+}
+
+/* Transitions */
+.fade-enter-active, .fade-leave-active {
+    transition: opacity 0.3s;
+}
+
+.fade-enter-from, .fade-leave-to {
+    opacity: 0;
+}
+
+/* Modal */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-center;
+    z-index: 1000;
+    padding: 20px;
+}
+
+.modal-content {
+    background: white;
+    border-radius: 12px;
+    max-width: 900px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+/* AI Analysis */
+.ai-analysis-content {
+    line-height: 1.8;
+    white-space: pre-wrap;
+    font-size: 14px;
+}
+
+.ai-analysis-content h1,
+.ai-analysis-content h2,
+.ai-analysis-content h3 {
+    font-weight: bold;
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+    color: #1f2937;
+}
+
+.ai-analysis-content h1 { font-size: 1.5rem; }
+.ai-analysis-content h2 { font-size: 1.25rem; }
+.ai-analysis-content h3 { font-size: 1.1rem; }
+
+.ai-analysis-content ul,
+.ai-analysis-content ol {
+    margin-left: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.ai-analysis-content li {
+    margin-bottom: 0.5rem;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* Responsive utilities */
+@media (max-width: 768px) {
+    .modal-content {
+        max-width: 100%;
+        max-height: 95vh;
+    }
+}
+
