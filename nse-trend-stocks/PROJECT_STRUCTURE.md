@@ -1,4 +1,4 @@
-# Project Structure - NSE Stock Trading Platform
+# Project Structure - UpwardStocks Platform
 
 This document outlines the improved folder structure and organization of the codebase for better maintainability and deployment.
 

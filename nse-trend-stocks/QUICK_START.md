@@ -1,4 +1,4 @@
-# 🚀 Quick Start Guide - NSE Stock Trading Platform
+# 🚀 Quick Start Guide - UpwardStocks Platform
 
 Get up and running in 15 minutes!
 
@@ -419,7 +419,7 @@ sudo systemctl restart stock-platform
 
 ## 🎉 You're All Set!
 
-Your NSE Stock Trading Platform is now running with:
+Your UpwardStocks Platform is now running with:
 
 ✅ Full authentication system (email + Google OAuth)  
 ✅ Advanced stock screening with 120-point analysis  
